@@ -48,6 +48,8 @@ class DrpEnv(gym.Env):
 		self.episode_account = 0
 
 		self.distance_from_start = np.zeros(self.agent_num)
+		self.agent_arrival_steps = np.full(self.agent_num, -1, dtype=int)
+		self.episode_cost = 0
 
 		# create ee_env and pass self.variable
 		self.ee_env = MapMake(self.agent_num, self.start_ori_array, self.goal_array, self.map_name)
@@ -69,6 +71,23 @@ class DrpEnv(gym.Env):
 		obs_box = self.obs_manager.get_obs_box()
 		self.observation_space = gym.spaces.Tuple(tuple([obs_box] * self.agent_num))
 		
+
+	def _record_agent_arrival(self, agent_id):
+		if self.agent_arrival_steps[agent_id] < 0:
+			self.agent_arrival_steps[agent_id] = self.step_account
+
+	def _calculate_episode_cost(self, info):
+		if info.get("collision", False) or info.get("timeup", False):
+			return int(self.agent_num * self.time_limit)
+		if info.get("goal", False):
+			cost = 0
+			for i in range(self.agent_num):
+				if self.agent_arrival_steps[i] > 0:
+					cost += self.agent_arrival_steps[i]
+				else:
+					cost += self.time_limit
+			return int(cost)
+		return int(self.agent_num * self.time_limit)
 
 	def get_obs(self):
 		return self.obs
@@ -119,6 +138,8 @@ class DrpEnv(gym.Env):
 		self.reach_account = 0
 		self.step_account = 0
 		self.episode_account += 1
+		self.agent_arrival_steps = np.full(self.agent_num, -1, dtype=int)
+		self.episode_cost = 0
 		print('Environment reset obs: \n', self.obs)
 
 		obs = self.obs_manager.calc_obs()
@@ -210,26 +231,27 @@ class DrpEnv(gym.Env):
 			"distance_from_start": None,
 			"step": self.step_account,
 			"wait": list(self.wait_count),
+			"cost": 0,
+			"goal_cost": None,
 		}
 		# happen
 		if collision_flag==1:#collision
-			#collision_reward=-1
 			collision_reward = self.r_coll*self.speed
 			if self.collision == "bounceback":
 				self.terminated = [False for _ in range(self.agent_num)]
 			else: # default -> self.collision == "terminated"
 				self.terminated = [True for _ in range(self.agent_num)]
 			info["collision"] = True
+			self.episode_cost = self.agent_num * self.time_limit
+			info["cost"] = self.episode_cost
 			obs = self.obs_manager.calc_obs()
 			ri_array = [collision_reward for _ in range(self.agent_num)]
-			
-			# return obs, [collision_reward for _ in range(self.agent_num)], self.terminated, info 
-			
+
 		# not happen
 		else: #non collision
 			self.obs = tuple([np.array(i) for i in self.obs_prepare])
 			self.obs_onehot = copy.deepcopy(self.obs_onehot_prepare)
-			self.current_start = copy.deepcopy(self.current_start_prepare)   
+			self.current_start = copy.deepcopy(self.current_start_prepare)
 			self.current_goal = copy.deepcopy(self.current_goal_prepare)
 
 			team_reward = 0
@@ -238,23 +260,25 @@ class DrpEnv(gym.Env):
 				ri = self.reward(i)
 				team_reward += ri
 				ri_array.append(ri)
-			
+
 			if self.terminated == [True for _ in range(self.agent_num)]: # all reach goal
 				print("!!!all reach goal!!!")
 				self.reach_account = 0
-				# info
 				info["goal"] = True
-			
-			else:
-				pass
+				self.episode_cost = self._calculate_episode_cost(info)
+				info["cost"] = self.episode_cost
+				info["goal_cost"] = self.episode_cost
 
 			obs = self.obs_manager.calc_obs()
 
 		# Check whether time is over
 		if self.step_account >= self.time_limit:
 			print("!!!time up!!!")
-			info["timeup"]= True
+			info["timeup"] = True
 			self.terminated = [True for _ in range(self.agent_num)]
+			if not info["goal"]:
+				self.episode_cost = self.agent_num * self.time_limit
+				info["cost"] = self.episode_cost
 
 		info["distance_from_start"] = list(self.distance_from_start)
 
@@ -266,10 +290,11 @@ class DrpEnv(gym.Env):
 		pos_agenti = [self.obs[i][0],self.obs[i][1]]
 
 		if str(pos_agenti)==str(self.pos[self.goal_array[i]]): # at goal
-			if pre_pos_agenti!=pos_agenti : #first time to reach goal 
+			if pre_pos_agenti!=pos_agenti : #first time to reach goal
 				r_i = self.r_goal
 				self.reach_account += 1
 				self.terminated[i] = True
+				self._record_agent_arrival(i)
 			else: # stop at goal
 				r_i = 0   
 				# self.distance_from_start[i] -= self.speed
