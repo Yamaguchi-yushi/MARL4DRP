@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk '{print $2, $3, $4, $11, $12}')",
+      "Bash(git -C /Users/yamaguchiyuushi/MARL4DRP remote -v)",
+      "Bash(git -C /Users/yamaguchiyuushi/MARL4DRP branch -r)"
+    ]
+  }
+}
